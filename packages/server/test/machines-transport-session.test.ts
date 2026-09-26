@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { closeConnectionTo, connectionTo, sessionOf } from "../src/machines/transport/index.js";
 
@@ -20,9 +21,11 @@ posixOnly("the session", () => {
     logFile = path.join(stubBin, "calls.log");
     // Every invocation is logged; an alias containing "refused" dies the way a wrong key
     // does; anything else asked for `sh` becomes one — commands run locally, harmlessly.
+    // The warm-up argument exits before the log is touched, so spawn counts stay exact.
     fs.writeFileSync(
       path.join(stubBin, "ssh"),
       `#!/bin/sh
+[ "$1" = --warmup ] && exit 0
 echo "$*" >> ${JSON.stringify(logFile)}
 case "$*" in *refused*) echo "deploy@refused: Permission denied (publickey)." >&2; exit 255 ;; esac
 for a in "$@"; do last=$a; done
@@ -31,6 +34,13 @@ exit 1
 `,
     );
     fs.chmodSync(path.join(stubBin, "ssh"), 0o755);
+    // macOS assesses a freshly written executable on its first exec (measured ~400ms via
+    // syspolicyd, against 7ms for the second) — longer than this suite's tightest command
+    // timeout, which then kills the stub before it ever ran and loses its log line. Warm
+    // the stub up front; the assessment result is cached for every later exec of it.
+    if (process.platform === "darwin") {
+      spawnSync(path.join(stubBin, "ssh"), ["--warmup"], { stdio: "ignore" });
+    }
     originalPath = process.env.PATH;
     process.env.PATH = `${stubBin}:${process.env.PATH ?? ""}`;
   });
